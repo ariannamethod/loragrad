@@ -173,10 +173,11 @@ int lg_field_init(lg_field_t* f, int n_experts, uint64_t seed) {
     f->dim       = LG_SIG_DIM;
     f->n_experts = n_experts;
 
-    f->expert_w = (float*)calloc((size_t)n_experts * LG_SIG_DIM, sizeof(float));
-    f->expert_b = (float*)calloc((size_t)n_experts, sizeof(float));
-    if (!f->expert_w || !f->expert_b) {
-        free(f->expert_w); free(f->expert_b);
+    f->expert_w      = (float*)calloc((size_t)n_experts * LG_SIG_DIM, sizeof(float));
+    f->expert_b      = (float*)calloc((size_t)n_experts, sizeof(float));
+    f->expert_credit = (float*)calloc((size_t)n_experts, sizeof(float));
+    if (!f->expert_w || !f->expert_b || !f->expert_credit) {
+        free(f->expert_w); free(f->expert_b); free(f->expert_credit);
         return -2;
     }
 
@@ -200,10 +201,11 @@ int lg_field_init(lg_field_t* f, int n_experts, uint64_t seed) {
 
 void lg_field_free(lg_field_t* f) {
     if (!f) return;
-    free(f->expert_w);  f->expert_w  = NULL;
-    free(f->expert_b);  f->expert_b  = NULL;
-    free(f->scar_sigs); f->scar_sigs = NULL;
-    free(f->dark_sigs); f->dark_sigs = NULL;
+    free(f->expert_w);      f->expert_w      = NULL;
+    free(f->expert_b);      f->expert_b      = NULL;
+    free(f->expert_credit); f->expert_credit = NULL;
+    free(f->scar_sigs);     f->scar_sigs     = NULL;
+    free(f->dark_sigs);     f->dark_sigs     = NULL;
 }
 
 void lg_field_set_origin_unit(lg_field_t* f, const float* unit_vec) {
@@ -241,15 +243,28 @@ void lg_field_set_boundary_from_sketches(lg_field_t* f, const float* sketches, i
 }
 
 /*
- * Calibrate experts: spread along the origin axis, slightly tilted toward and
- * away from boundary, with a small isotropic perturbation so the parliament
- * has internal diversity rather than identical votes.
+ * Calibrate experts: spread around the origin↔boundary plane with
+ * antagonist pairs and added isotropic noise. The first half of experts
+ * leans toward origin; the second half leans toward boundary. With
+ * adaptive credits this gives the parliament real polarization — experts
+ * that vote correctly on their side gain weight, others fade.
  *
  * Per expert i:
+ *   theta_i ∈ [-π/2, +π/2], evenly spread across n_experts
  *   w_i = cos(theta_i) * origin + sin(theta_i) * boundary_perp + noise
  *
- * theta_i ∈ [-pi/6, +pi/6] linearly across n_experts, so all experts lean
- * toward origin (positive projection) but with non-trivial spread.
+ * cos(θ) is the origin-projection (positive in [-π/2, +π/2]), so all
+ * experts still respond to origin alignment, but with progressively
+ * different boundary tilt — experts in the middle of the range are
+ * close to pure origin, experts at the edges are close to ±boundary.
+ *
+ * Phase 1 / phase 2 (no `--adaptive`): consensus is a plain mean of all
+ * tanh votes; the wider spread does not collapse separation because
+ * delta_axis carries 70% of the score and consensus only 30%.
+ *
+ * Phase 2.5 (`--adaptive`): each expert's credit drifts toward the side
+ * it correctly classifies; softplus-weighted aggregate then favors the
+ * experts that learned right.
  */
 void lg_field_calibrate_experts(lg_field_t* f, uint64_t seed) {
     if (!f->origin_set || !f->boundary_set) return;
@@ -264,7 +279,8 @@ void lg_field_calibrate_experts(lg_field_t* f, uint64_t seed) {
 
     uint64_t s = seed ? seed : 0xc0ffeec0ffeefeedULL;
     const double PI = 3.14159265358979323846;
-    const double tilt_max = PI / 6.0;
+    const double tilt_max = PI / 3.0;   /* ≈ 60° — wide enough for divergent  */
+                                        /* expert credits under adaptive lr   */
 
     for (int e = 0; e < f->n_experts; ++e) {
         double t = (f->n_experts == 1) ? 0.0
@@ -274,15 +290,15 @@ void lg_field_calibrate_experts(lg_field_t* f, uint64_t seed) {
         float* row = f->expert_w + (size_t)e * LG_SIG_DIM;
         for (int i = 0; i < LG_SIG_DIM; ++i) {
             s = lg_mix64(s + 1);
-            float noise = (((s >> 11) & 0xFFFFF) / (float)0xFFFFF - 0.5f) * 0.05f;
+            float noise = (((s >> 11) & 0xFFFFF) / (float)0xFFFFF - 0.5f) * 0.20f;
             row[i] = c * f->origin_sig[i] + sn * bperp[i] + noise;
         }
-        /* Make each expert weight a unit vector so its dot product with sig
-         * sits in [-1, +1] and tanh saturation is meaningful. */
+        /* Unit-normalize so dot products sit in [-1, +1] and tanh saturates
+         * symmetrically. */
         lg_normalize_unit(row, LG_SIG_DIM);
 
         s = lg_mix64(s + 7);
-        float bnoise = (((s >> 11) & 0xFFFFF) / (float)0xFFFFF - 0.5f) * 0.05f;
+        float bnoise = (((s >> 11) & 0xFFFFF) / (float)0xFFFFF - 0.5f) * 0.10f;
         f->expert_b[e] = bnoise;
     }
 }
@@ -324,14 +340,28 @@ lg_verdict_t lg_field_vote(const lg_field_t* f, const float* sig, float* out_alp
     float origin_score   = lg_dot(sig, f->origin_sig,   LG_SIG_DIM);
     float boundary_score = lg_dot(sig, f->boundary_sig, LG_SIG_DIM);
 
-    /* Parliament consensus — modulates inside the resonance frame. */
+    /* Parliament consensus — softplus(credit)-weighted mean of per-expert tanh
+     * votes. Experts with positive learned credit count more, negative count
+     * less but never zero (softplus floor ≈ log(2) ≈ 0.69 at credit=0). When
+     * all credits are zero (phase 1 / phase 2 baseline) this reduces to a
+     * plain mean and the previous behavior is preserved. */
     double consensus = 0.0;
+    double total_w   = 0.0;
     for (int e = 0; e < f->n_experts; ++e) {
         const float* w = f->expert_w + (size_t)e * LG_SIG_DIM;
         float z = lg_dot(w, sig, LG_SIG_DIM) + f->expert_b[e];
-        consensus += tanh((double)z);
+        float c = f->expert_credit ? f->expert_credit[e] : 0.0f;
+        /* softplus(c) = log(1 + exp(c)) — always > 0. log1pf+expf is
+         * well-behaved on the clamped range [-LG_CREDIT_CLAMP, +LG_CREDIT_CLAMP]. */
+        double w_eff;
+        if      (c >  20.0f) w_eff = (double)c;          /* avoid expf overflow  */
+        else if (c < -20.0f) w_eff = exp((double)c);     /* tiny but positive    */
+        else                 w_eff = log1p(exp((double)c));
+        consensus += w_eff * tanh((double)z);
+        total_w   += w_eff;
     }
-    consensus /= (double)f->n_experts;                                /* [-1, +1] */
+    if (total_w > 0.0) consensus /= total_w;                         /* [-1, +1] */
+    else               consensus  = 0.0;
 
     float score = 0.7f * delta_axis + 0.3f * (float)consensus;
 
@@ -395,6 +425,24 @@ void lg_field_reset_counters(lg_field_t* f) {
     for (int i = 0; i < LG_VERDICT_COUNT; ++i) f->counters[i] = 0;
 }
 
+/* ── adaptive experts (phase 2.5) ──────────────────────────────────────────── */
+
+void lg_field_update_experts(lg_field_t* f, const float* sig,
+                             int target_origin, float lr)
+{
+    if (!f || !f->expert_credit) return;
+    float target_sign = target_origin ? +1.0f : -1.0f;
+    for (int e = 0; e < f->n_experts; ++e) {
+        const float* w = f->expert_w + (size_t)e * LG_SIG_DIM;
+        float z = lg_dot(w, sig, LG_SIG_DIM) + f->expert_b[e];
+        float v = (float)tanh((double)z);              /* [-1, +1] */
+        float reward = v * target_sign;                /* [-1, +1] */
+        f->expert_credit[e] += lr * reward;
+        if (f->expert_credit[e] >  LG_CREDIT_CLAMP) f->expert_credit[e] =  LG_CREDIT_CLAMP;
+        if (f->expert_credit[e] < -LG_CREDIT_CLAMP) f->expert_credit[e] = -LG_CREDIT_CLAMP;
+    }
+}
+
 void lg_field_summary(const lg_field_t* f, const char* label) {
     if (!f) return;
     float ob = (f->origin_set && f->boundary_set)
@@ -412,4 +460,11 @@ void lg_field_summary(const lg_field_t* f, const char* label) {
     printf("\n");
     printf("  scar_log=%d/%d dark_store=%d/%d\n",
            f->scar_count, f->scar_cap, f->dark_count, f->dark_cap);
+    if (f->expert_credit) {
+        printf("  expert_credit:");
+        for (int e = 0; e < f->n_experts; ++e) {
+            printf(" %+0.2f", f->expert_credit[e]);
+        }
+        printf("\n");
+    }
 }

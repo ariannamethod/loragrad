@@ -52,6 +52,10 @@ typedef struct {
     int   n_experts;
     float* expert_w;                        /* [n_experts, dim]                   */
     float* expert_b;                        /* [n_experts]                        */
+    float* expert_credit;                   /* [n_experts] — phase 2.5 adaptive   */
+                                            /* softplus(credit) is the soft       */
+                                            /* weight in aggregate consensus.     */
+                                            /* Updated by lg_field_update_experts.*/
 
     /* Verdict thresholds on (origin_score - boundary_score) ∈ [-1, +1].          */
     /* Tunable; defaults chosen to give clear separation in smoke.                */
@@ -105,6 +109,24 @@ lg_verdict_t lg_field_vote(const lg_field_t* f, const float* sig, float* out_alp
 /* Caller is responsible for actually scaling / zeroing the gradient — this       */
 /* function only records the field-side bookkeeping.                              */
 void lg_field_record(lg_field_t* f, lg_verdict_t v, const float* sig);
+
+/* Phase 2.5 — adaptive expert credits.                                           */
+/*                                                                                */
+/* Update each expert's credit by the alignment of its vote with the supervised   */
+/* target. `target_origin = 1` means the sample is from the origin distribution   */
+/* (parliament should pass it); `target_origin = 0` means it is adversarial       */
+/* (parliament should block).                                                     */
+/*                                                                                */
+/* Reward per expert = (vote_e ∈ [-1, +1]) × (target_sign ∈ {+1, -1}).            */
+/* credit_e += lr × reward_e, clamped to ±LG_CREDIT_CLAMP.                        */
+/*                                                                                */
+/* Aggregate consensus is then a softplus(credit)-weighted mean of votes, so      */
+/* experts that learn correctly contribute more over time.                        */
+void lg_field_update_experts(lg_field_t* f, const float* sig,
+                             int target_origin, float lr);
+
+/* Hard clamp for expert credit. Prevents runaway weights.                        */
+#define LG_CREDIT_CLAMP 10.0f
 
 /* Reset counters (between smoke phases).                                         */
 void lg_field_reset_counters(lg_field_t* f);

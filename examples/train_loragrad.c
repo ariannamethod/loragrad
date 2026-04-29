@@ -94,6 +94,12 @@ static void install_crash_trap(void) {}
 /* The point of the run is to demonstrate the parliament filtering these out. */
 #define MIX_ADVERSARIAL_PROB  0.10f
 
+/* Phase 2.5 — adaptive expert learning rate. Each step the parliament       */
+/* receives a supervised signal about whether the sample was clean or adv,   */
+/* and per-expert credits drift toward the experts that voted correctly.    */
+/* Disabled by default (--adaptive flag turns it on).                       */
+#define EXPERT_LR_DEFAULT      3e-3f
+
 /* ── Data ─────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -407,25 +413,30 @@ static void generate(Model* m, const char* prompt, int max_new, FILE* out) {
 
 int main(int argc, char** argv) {
     install_crash_trap();
-    int routed = 1;
-    int steps  = 5000;
-    int seed   = 42;
-    float lr   = 3e-4f;
+    int   routed   = 1;
+    int   adaptive = 0;
+    int   steps    = 5000;
+    int   seed     = 42;
+    float lr       = 3e-4f;
+    float expert_lr = EXPERT_LR_DEFAULT;
     const char* run_name = "routed";
     for (int i = 1; i < argc; ++i) {
-        if      (!strcmp(argv[i], "--routed"))  { routed = 1; run_name = "routed"; }
-        else if (!strcmp(argv[i], "--control")) { routed = 0; run_name = "control"; }
+        if      (!strcmp(argv[i], "--routed"))   { routed = 1; run_name = "routed"; }
+        else if (!strcmp(argv[i], "--control"))  { routed = 0; run_name = "control"; }
+        else if (!strcmp(argv[i], "--adaptive")) { adaptive = 1; }
         else if (!strncmp(argv[i], "--steps=", 8)) steps = atoi(argv[i] + 8);
         else if (!strncmp(argv[i], "--seed=",  7)) seed  = atoi(argv[i] + 7);
         else if (!strncmp(argv[i], "--lr=",    5)) lr    = (float)atof(argv[i] + 5);
         else if (!strncmp(argv[i], "--name=",  7)) run_name = argv[i] + 7;
+        else if (!strncmp(argv[i], "--expert-lr=", 12)) expert_lr = (float)atof(argv[i] + 12);
     }
 
     printf("════════════════════════════════════════════════════════\n");
     printf("  loragrad train (%s)\n", run_name);
     printf("  dim=%d L=%d H=%d HD=%d FFN=%d CTX=%d V=%d\n",
            DIM, NLAYERS, NHEADS, HEAD_DIM, HIDDEN, CTX, VOCAB);
-    printf("  steps=%d lr=%.1e seed=%d routed=%d\n", steps, lr, seed, routed);
+    printf("  steps=%d lr=%.1e seed=%d routed=%d adaptive=%d expert_lr=%.1e\n",
+           steps, lr, seed, routed, adaptive, expert_lr);
     printf("════════════════════════════════════════════════════════\n");
 
     Corpus c;
@@ -528,6 +539,15 @@ int main(int argc, char** argv) {
                 case LG_SILENCE: scale_all_grads(0.0f);                       break;
                 default: break;
             }
+
+            /* Phase 2.5: parliament learns from the supervised label.
+             * `from_adv` is ground truth from the mixer; experts that voted
+             * with the correct sign gain credit, others fade.            */
+            if (adaptive) {
+                lg_field_update_experts(&field, text_sig,
+                                        /* target_origin = */ !from_adv,
+                                        expert_lr);
+            }
         }
 
         nt_tape_clip_grads(1.0f);
@@ -601,6 +621,10 @@ int main(int argc, char** argv) {
                 printf(" %-7d", stats.confusion[s][v]);
             }
             printf("\n");
+        }
+        if (adaptive) {
+            printf("\n  parliament after adaptive training:\n");
+            lg_field_summary(&field, "final");
         }
     }
 

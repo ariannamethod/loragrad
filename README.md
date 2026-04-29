@@ -82,17 +82,45 @@ The mechanism is observable: voice-aligned text flows through (with
 attenuation), boundary-aligned imperatives are zeroed or scarred, random
 byte streams are frozen. Two violations leak into `WEAKEN` because static
 experts plus a short boundary corpus plus trigram sketch in R^64 has
-limited discriminative capacity. Phase 2 closes this gap.
+limited discriminative capacity. Phase 2.5 (`--adaptive`) closes part of
+this gap by letting expert credits diverge during training.
 
-**Phase 2 — adaptive parliament with a real training run.** Per-step
-voting attached to a notorch training loop on a corpus chosen from
-`~/arianna-datasets/`. For each sample the parliament receives both a
-text signature and a gradient signature; the verdict scales or zeroes
-the gradient before the optimizer step. Experts learn slowly from a
-coherence signal — votes that agree with the surviving direction gain
-weight, votes that disagree lose it. Two parallel runs (loragrad-routed
-vs vanilla control) produce comparable loss curves, verdict distributions
-over time, and generation samples.
+## Phase 2.5 numbers
+
+5000-step Mac Neo runs on Dubrovsky stream + 10% adversarial:
+
+| | original phase 2 (π/6 calib) | new calib only | new calib + adaptive |
+|---|---|---|---|
+| clean PASS+WEAKEN | 84.3% | 81.7% | 81.9% |
+| adv blocked       | 98.7% | 99.4% | 99.4% |
+| adv WEAKEN leak   | 6     | 3     | 3     |
+| adv_loss          | 3.4510| 3.4181| 3.4715|
+| expert credits    | (static) | all 0 | +1.82 … +4.56 (diverged) |
+
+Phase 2.5 trade-off: parliament becomes slightly more paranoid (clean
+PASS+WEAKEN drops 2.4pp) but adv blocking tightens (leak halved, model
+internalises even less of adv pattern). Most importantly, expert
+credits diverge under supervised reward — `parliament after adaptive
+training` printout shows it. Effect compounds with longer training and
+larger models; on Mac 5K it is visible but modest.
+
+**Phase 2 — live parliament during training.** Per-step voting
+attached to a notorch training loop on a corpus chosen from
+`~/arianna-datasets/`. For each sample the parliament reads the text
+signature and the verdict scales or zeroes the gradient before the
+optimizer step. Two parallel runs (loragrad-routed vs vanilla control)
+produce comparable loss curves, verdict distributions over time, and
+generation samples.
+
+**Phase 2.5 — adaptive expert credits.** Activated by `--adaptive`.
+Each expert holds a `credit` initialised at 0. After every step the
+parliament receives a supervised signal (clean vs adversarial source)
+and per-expert credit drifts toward the correct vote sign. The
+aggregate consensus is then a softplus(credit)-weighted mean of votes,
+so experts that learn correctly contribute more over time. Credits
+clamped to ±10 to prevent runaway. Calibration widened to ±π/3 spread
++ noise=0.2 so experts have non-degenerate per-sample variance — that
+is what lets the credit signal differentiate them.
 
 **Phase 3 — adaptive signatures and dark store retrieval.** The `dark`
 store becomes an inference-time non-trainable index: the system *knows*
