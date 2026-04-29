@@ -1,6 +1,18 @@
 # Railway deployment
 
-Project: **loragrad-train**
+> **Status 2026-04-29 (evening):** project deleted — training was complete,
+> service was just heartbeating and burning compute. Recipe below stays
+> documented so a future redeploy can stand it up again in one shot.
+>
+> Two updates baked into the repo since the original deploy:
+> 1. `ENV OPENBLAS_NUM_THREADS=1` in `Dockerfile`.
+> 2. `-O3 -march=native -mtune=native` on Linux in `Makefile`.
+>
+> Together these gave a ~7× end-to-end speedup on the Henry sibling
+> session (12K-step run: 310 → 142 min). Apply this recipe to every
+> Railway training deploy from now on.
+
+Project: **loragrad-train** (deleted 2026-04-29)
 Workspace: ariannamethod's Projects (Pro plan)
 Repo: `ariannamethod/loragrad`, branch `main`
 
