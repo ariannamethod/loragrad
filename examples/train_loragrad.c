@@ -43,6 +43,37 @@
 #include <sys/time.h>
 #include <stdint.h>
 
+#ifdef __linux__
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+/* Crash trap: silent SIGSEGVs on Linux from Mac dev hide preset / OOB / UB
+ * bugs that Mac tolerates. Print a backtrace before dying so Railway logs
+ * actually contain a clue. (Pattern from cavellman.c::install_crash_trap.) */
+static void lg_crash_handler(int sig) {
+    void* bt[64];
+    int n = backtrace(bt, 64);
+    fprintf(stderr, "\n*** CRASH (signal %d) — backtrace ***\n", sig);
+    backtrace_symbols_fd(bt, n, STDERR_FILENO);
+    fflush(stderr);
+    _exit(128 + sig);
+}
+
+static void install_crash_trap(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = lg_crash_handler;
+    sa.sa_flags   = SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGFPE,  &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
+}
+#else
+static void install_crash_trap(void) {}
+#endif
+
 /* ── Model dimensions ─────────────────────────────────────────────────────── */
 
 #define DIM       192
@@ -375,6 +406,7 @@ static void generate(Model* m, const char* prompt, int max_new, FILE* out) {
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 
 int main(int argc, char** argv) {
+    install_crash_trap();
     int routed = 1;
     int steps  = 5000;
     int seed   = 42;
