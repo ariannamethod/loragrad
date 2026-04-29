@@ -13,6 +13,12 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# OPENBLAS_NUM_THREADS=1 disables OpenBLAS's pthread spawn per sgemv;
+# for our small dim (~192) the spawn overhead dominates the matmul
+# itself. Combined with -O3 -march=native in the Makefile this gives
+# ~7× end-to-end speedup on Railway. Source: Henry session 2026-04-29.
+ENV OPENBLAS_NUM_THREADS=1
+
 RUN apt-get update && apt-get install -y \
         build-essential \
         libopenblas-dev \
