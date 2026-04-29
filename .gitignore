@@ -1,0 +1,5 @@
+*.o
+*.dSYM
+examples/smoke_test
+examples/train_loragrad
+train_dbg
