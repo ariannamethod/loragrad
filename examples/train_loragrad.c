@@ -532,7 +532,7 @@ int main(int argc, char** argv) {
             /* Apply verdict. */
             switch (verdict) {
                 case LG_PASS:    /* alpha = 1, no scaling */                  break;
-                case LG_WEAKEN:  scale_all_grads(alpha);                      break;
+                case LG_WEAKEN:  /* alpha applied after clip (F3a, below)    */ break;
                 case LG_FREEZE:
                 case LG_SCAR:
                 case LG_DARK:
@@ -559,7 +559,11 @@ int main(int argc, char** argv) {
         int blocked = (verdict == LG_FREEZE || verdict == LG_SCAR ||
                        verdict == LG_DARK   || verdict == LG_SILENCE);
         if (!blocked) {
+            /* LG-H2/F3a: clip FIRST, then apply WEAKEN's alpha — clipping after
+             * the scale could renormalize alpha*g back to norm 1 and erase
+             * alpha. clip->scale gives a final norm of alpha*min(||g||,1) <= alpha. */
             nt_tape_clip_grads(1.0f);
+            if (verdict == LG_WEAKEN) scale_all_grads(alpha);
             nt_tape_chuck_step(cur_lr, lv);
         }
         nt_tape_clear();

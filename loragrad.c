@@ -83,10 +83,12 @@ void lg_signature_from_buffer(const float* buf, int len, float* out_sig) {
     float sign;
     for (int i = 0; i < LG_SIG_DIM; ++i) out_sig[i] = 0.0f;
     for (int i = 0; i < len; ++i) {
-        /* Hash on (position, value) so identical positions with different
-         * values land in different bins. Without the value mix, two same-
-         * length English strings would produce indistinguishable sketches. */
-        uint64_t key = lg_mix2((uint64_t)i + 1ULL, (uint64_t)(uint32_t)buf[i]);
+        /* LG-M2: hash the float's bit pattern, not its truncated integer value.
+         * (uint32_t)buf[i] folded every |v|<1 to 0 (position-only key) and was
+         * UB for negative floats per C11 6.3.1.4. memcpy is the portable
+         * reinterpret that keeps "different values → different bins" true. */
+        uint32_t bits; memcpy(&bits, &buf[i], sizeof(bits));
+        uint64_t key = lg_mix2((uint64_t)i + 1ULL, (uint64_t)bits);
         lg_count_sketch_hash(key, LG_SIG_DIM, &bin, &sign);
         out_sig[bin] += sign * buf[i];
     }
@@ -305,6 +307,18 @@ void lg_field_calibrate_experts(lg_field_t* f, uint64_t seed) {
 
 /* ── voting ────────────────────────────────────────────────────────────────── */
 
+/* Max cosine similarity of `sig` against a log of unit-vector signatures. Both
+ * are unit vectors, so the dot is the cosine. Used for scar/dark recall (LG-M1).
+ * Returns -2.0 for an empty log (never triggers recall). */
+static float lg_max_sim(const float* sig, const float* sigs, int count) {
+    float best = -2.0f;
+    for (int i = 0; i < count; ++i) {
+        float s = lg_dot(sig, sigs + (size_t)i * LG_SIG_DIM, LG_SIG_DIM);
+        if (s > best) best = s;
+    }
+    return best;
+}
+
 lg_verdict_t lg_field_vote(const lg_field_t* f, const float* sig, float* out_alpha) {
     if (out_alpha) *out_alpha = 1.0f;
 
@@ -363,6 +377,39 @@ lg_verdict_t lg_field_vote(const lg_field_t* f, const float* sig, float* out_alp
     if (total_w > 0.0) consensus /= total_w;                         /* [-1, +1] */
     else               consensus  = 0.0;
 
+    /* ── LG-M1: immune-memory recall (read the scar/dark log) ─────────────────
+     * A signature that closely matches a previously-recorded wound is blocked
+     * on sight, independent of the parliament vote. Checked first so consensus
+     * cannot talk the field out of a remembered attack — this is what turns the
+     * write-only log into actual immunity. */
+    if (f->scar_count > 0 &&
+        lg_max_sim(sig, f->scar_sigs, f->scar_count) >= LG_RECALL_THRESH) {
+        if (out_alpha) *out_alpha = 0.0f;
+        return LG_SCAR;
+    }
+    if (f->dark_count > 0 &&
+        lg_max_sim(sig, f->dark_sigs, f->dark_count) >= LG_RECALL_THRESH) {
+        if (out_alpha) *out_alpha = 0.0f;
+        return LG_DARK;
+    }
+
+    /* ── LG-M3: hard boundary override — alignment beats consensus ────────────
+     * A sample strongly aligned against the origin (-delta_axis past the
+     * scar/dark threshold) is a boundary attack regardless of the consensus.
+     * Checked before PASS/WEAKEN so a saturated or mis-trained consensus cannot
+     * pull a boundary-aligned sample up into WEAKEN. (Was below PASS/WEAKEN.)
+     * Uses the AXIS projection (-delta_axis), not raw boundary_score, since raw
+     * scores can be positive on both origin and boundary when the corpora share
+     * a strong common direction. */
+    if (-delta_axis >= f->thresh_dark) {
+        if (out_alpha) *out_alpha = 0.0f;
+        return LG_DARK;
+    }
+    if (-delta_axis >= f->thresh_scar) {
+        if (out_alpha) *out_alpha = 0.0f;
+        return LG_SCAR;
+    }
+
     float score = 0.7f * delta_axis + 0.3f * (float)consensus;
 
     if (score >= f->thresh_pass) {
@@ -374,20 +421,6 @@ lg_verdict_t lg_field_vote(const lg_field_t* f, const float* sig, float* out_alp
         if (a < 0.0f) a = 0.0f; if (a > 1.0f) a = 1.0f;
         if (out_alpha) *out_alpha = a;
         return LG_WEAKEN;
-    }
-
-    /* Below freeze: check if specifically boundary-aligned.                       */
-    /* The decision uses the AXIS projection from the boundary side                */
-    /* (i.e. -delta_axis), not raw boundary_score, since raw scores can be         */
-    /* simultaneously positive on both origin and boundary when the corpora        */
-    /* share a strong common direction.                                            */
-    if (-delta_axis >= f->thresh_dark) {
-        if (out_alpha) *out_alpha = 0.0f;
-        return LG_DARK;
-    }
-    if (-delta_axis >= f->thresh_scar) {
-        if (out_alpha) *out_alpha = 0.0f;
-        return LG_SCAR;
     }
 
     if (score >= f->thresh_freeze) {
@@ -423,6 +456,15 @@ void lg_field_record(lg_field_t* f, lg_verdict_t v, const float* sig) {
 void lg_field_reset_counters(lg_field_t* f) {
     if (!f) return;
     for (int i = 0; i < LG_VERDICT_COUNT; ++i) f->counters[i] = 0;
+}
+
+/* Clear the scar/dark immune-memory log (counts → 0; backing buffers stay
+ * allocated and are overwritten as new wounds are recorded). Used to drop
+ * fixture wounds before a real run so recall starts clean. */
+void lg_field_reset_memory(lg_field_t* f) {
+    if (!f) return;
+    f->scar_count = 0;
+    f->dark_count = 0;
 }
 
 /* ── adaptive experts (phase 2.5) ──────────────────────────────────────────── */

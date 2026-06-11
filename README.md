@@ -74,15 +74,17 @@ Phase-1 smoke on the bundled synthetic corpora:
 
 ```
 coherent  PASS+WEAKEN          = 4 / 6
-violation SCAR+DARK+FREEZE     = 4 / 6
+violation SCAR+DARK+FREEZE     = 5 / 6
 noise     FREEZE+SILENCE       = 6 / 6
 ```
 
 The mechanism is observable: voice-aligned text flows through (with
 attenuation), boundary-aligned imperatives are zeroed or scarred, random
-byte streams are frozen. Two violations leak into `WEAKEN` because static
+byte streams are frozen. One violation leaks into `WEAKEN` because static
 experts plus a short boundary corpus plus trigram sketch in R^64 has
-limited discriminative capacity. Phase 2.5 (`--adaptive`) closes part of
+limited discriminative capacity. The LG-M3 boundary override (audit fix)
+checks origin-alignment before the consensus score ladder, tightening
+violation blocking from 4/6 to 5/6. Phase 2.5 (`--adaptive`) closes more of
 this gap by letting expert credits diverge during training.
 
 ## Phase 2.5 numbers
@@ -94,8 +96,17 @@ this gap by letting expert credits diverge during training.
 | clean PASS+WEAKEN | 84.3% | 81.7% | 81.9% |
 | adv blocked       | 98.7% | 99.4% | 99.4% |
 | adv WEAKEN leak   | 6     | 3     | 3     |
-| adv_loss          | 3.4510| 3.4181| 3.4715|
+| adv_loss          | 3.4510| 3.6011| 3.6035|
 | expert credits    | (static) | all 0 | +1.82 … +4.56 (diverged) |
+
+The `new calib` columns were re-run 2026-06-11 with the Mythos-audit fixes
+(LG-M1 scar recall, LG-M3 boundary override, F3a clip→scale ordering). The fixes
+are **verdict-neutral** on this corpus — clean PASS+WEAKEN, adv-blocked and leak
+are unchanged — but `adv_loss` rises ~0.18 (3.42→3.60, 3.47→3.60) because F3a now
+applies WEAKEN's alpha to the gradients *after* clipping, so attenuated clean
+steps move the weights slightly less and the model internalises even less of the
+adversarial stream. The `π/6 calib` column is the pre-audit historical run.
+Control adv_loss (no routing), same re-run: 1.75.
 
 Phase 2.5 trade-off: parliament becomes slightly more paranoid (clean
 PASS+WEAKEN drops 2.4pp) but adv blocking tightens (leak halved, model

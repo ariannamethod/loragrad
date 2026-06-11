@@ -1,5 +1,14 @@
 # loragrad phase-2 report — 2026-04-29
 
+> **Audit re-run note (2026-06-11).** This report documents the original
+> π/6-calibration run. The Mythos-audit fixes (LG-M1 scar recall, LG-M3 boundary
+> override, F3a clip→scale ordering) were verified **verdict-neutral** on this
+> corpus — the confusion matrix and PASS/WEAKEN/blocked rates below are unchanged
+> in kind. The current `new calib` code re-runs at clean PASS+WEAKEN 81.7%, adv
+> blocked 99.4%, leak 3, adv_loss 3.60 (routed) vs 1.75 (control); see the README
+> "Phase 2.5 numbers" table. The figures in *this* file are kept as the
+> historical π/6 record.
+
 Two 5000-step training runs of a tiny LLaMA on a mixed clean / adversarial
 character stream. The only difference between them is whether the
 parliament-of-experts is in the loop. All other settings are identical.

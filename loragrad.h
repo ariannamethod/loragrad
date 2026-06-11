@@ -128,8 +128,15 @@ void lg_field_update_experts(lg_field_t* f, const float* sig,
 /* Hard clamp for expert credit. Prevents runaway weights.                        */
 #define LG_CREDIT_CLAMP 10.0f
 
+/* Immune-memory recall threshold (cosine). Max similarity against the scar/dark
+ * log at or above this blocks on sight, independent of the vote (LG-M1).         */
+#define LG_RECALL_THRESH 0.90f
+
 /* Reset counters (between smoke phases).                                         */
 void lg_field_reset_counters(lg_field_t* f);
+
+/* Clear the scar/dark immune-memory log (counts → 0; buffers stay allocated).    */
+void lg_field_reset_memory(lg_field_t* f);
 
 /* Print field summary: origin/boundary alignment, expert spread, counters.       */
 void lg_field_summary(const lg_field_t* f, const char* label);
