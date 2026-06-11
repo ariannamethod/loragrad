@@ -36,9 +36,9 @@ endif
 
 LDLIBS ?= -lm
 
-.PHONY: all clean smoke train
+.PHONY: all clean smoke train test
 
-all: loragrad.o loragrad_standalone.o examples/smoke_test examples/train_loragrad
+all: loragrad.o loragrad_standalone.o examples/smoke_test examples/train_loragrad examples/test_freeze_skip
 
 # Vendored notorch — built once, linked into the trainer.
 notorch.o: notorch.c notorch.h
@@ -59,11 +59,18 @@ examples/smoke_test: examples/smoke_test.c loragrad_standalone.o loragrad.h
 examples/train_loragrad: examples/train_loragrad.c loragrad.o notorch.o loragrad.h notorch.h
 	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o $@ examples/train_loragrad.c loragrad.o notorch.o $(BLAS_LIBS) $(LDLIBS)
 
+# Regression test for LG-H1 (blocked-verdict optimizer skip). Notorch-only.
+examples/test_freeze_skip: examples/test_freeze_skip.c notorch.o notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o $@ examples/test_freeze_skip.c notorch.o $(BLAS_LIBS) $(LDLIBS)
+
 smoke: examples/smoke_test
 	./examples/smoke_test
+
+test: examples/test_freeze_skip
+	./examples/test_freeze_skip
 
 train: examples/train_loragrad
 	./examples/train_loragrad --routed
 
 clean:
-	rm -f loragrad.o loragrad_standalone.o notorch.o examples/smoke_test examples/train_loragrad
+	rm -f loragrad.o loragrad_standalone.o notorch.o examples/smoke_test examples/train_loragrad examples/test_freeze_skip

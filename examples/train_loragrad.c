@@ -536,7 +536,7 @@ int main(int argc, char** argv) {
                 case LG_FREEZE:
                 case LG_SCAR:
                 case LG_DARK:
-                case LG_SILENCE: scale_all_grads(0.0f);                       break;
+                case LG_SILENCE: /* blocked — optimizer skipped below (LG-H1) */ break;
                 default: break;
             }
 
@@ -550,8 +550,18 @@ int main(int argc, char** argv) {
             }
         }
 
-        nt_tape_clip_grads(1.0f);
-        nt_tape_chuck_step(cur_lr, lv);
+        /* LG-H1 (Operation Ordnung): blocked verdicts skip the optimizer
+         * entirely. Running Chuck on zeroed grads still moves weights via the
+         * momentum tail + stagnation noise, and feeds gnorm=0 into the freeze
+         * detector — NT_CHUCK_STAG_STEPS blocked steps in a row latch
+         * frozen=1 with no recovery path, exactly under the adversarial bursts
+         * the immune layer exists to repel. Mirror CoA (coa_v1_janus.c:532-535). */
+        int blocked = (verdict == LG_FREEZE || verdict == LG_SCAR ||
+                       verdict == LG_DARK   || verdict == LG_SILENCE);
+        if (!blocked) {
+            nt_tape_clip_grads(1.0f);
+            nt_tape_chuck_step(cur_lr, lv);
+        }
         nt_tape_clear();
 
         /* Stats. */
