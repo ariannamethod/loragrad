@@ -108,6 +108,14 @@ steps move the weights slightly less and the model internalises even less of the
 adversarial stream. The `π/6 calib` column is the pre-audit historical run.
 Control adv_loss (no routing), same re-run: 1.75.
 
+This is also why the phase-2 run is the real regression test for the immune
+layer: unlike the phase-1 smoke (which only votes), it routes every verdict
+through actual gradients on the notorch tape, so a WEAKEN / clip / recall bug
+surfaces as a number rather than a silent no-op. A gating layer tested by votes
+alone is untested where it matters — at the gradient. (The CoA sibling repo
+learned this the hard way: its origin-only smoke is all-PASS, so a Codex pass,
+not its own tests, caught three grad-path bugs in the same audit.)
+
 Phase 2.5 trade-off: parliament becomes slightly more paranoid (clean
 PASS+WEAKEN drops 2.4pp) but adv blocking tightens (leak halved, model
 internalises even less of adv pattern). Most importantly, expert
